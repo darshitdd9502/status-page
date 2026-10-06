@@ -33,18 +33,6 @@ jobs:
       - name: Build
         run: mvn -B -DskipTests package
 
-  package:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up JDK 26
-        uses: actions/setup-java@v4
-        with:
-          java-version: '26'
-          distribution: 'temurin'
-
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
