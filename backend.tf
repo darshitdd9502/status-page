@@ -6,7 +6,7 @@
 terraform {
   backend "azurerm" {
     resource_group_name  = "statuspage-tfstate-rg"
-    storage_account_name = "statuspageTfstate"   # must be globally unique — override in CI
+    storage_account_name = "statuspagetfstate"   # must be globally unique — override in CI
     container_name       = "tfstate"
     key                  = "statuspage/prod/terraform.tfstate"
     # use_oidc = true  # Uncomment when running in Azure DevOps / GitHub Actions with OIDC

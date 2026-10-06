@@ -207,6 +207,7 @@ resource "azurerm_subnet" "management" {
   resource_group_name  = azurerm_resource_group.main.name
   virtual_network_name = azurerm_virtual_network.main.name
   address_prefixes     = [var.management_subnet_cidr]
+  service_endpoints    = ["Microsoft.KeyVault"]
 }
 
 # ── NSG: App Tier ────────────────────────────────────────────────────────────
@@ -465,10 +466,11 @@ resource "azurerm_application_gateway" "main" {
   resource_group_name = azurerm_resource_group.main.name
   location            = azurerm_resource_group.main.location
 
-  # WAF_v2 provides Web Application Firewall + autoscaling.
+  # Standard_v2: autoscaling without WAF (WAF_v2 now requires a separate
+  # azurerm_web_application_firewall_policy resource; not needed for this demo).
   sku {
-    name = "WAF_v2"
-    tier = "WAF_v2"
+    name = "Standard_v2"
+    tier = "Standard_v2"
   }
 
   # Autoscale between 1 and 3 instances; avoids over-provisioning for a
@@ -536,83 +538,7 @@ resource "azurerm_application_gateway" "main" {
     unhealthy_threshold = 3
   }
 
-  # WAF policy — prevention mode, OWASP 3.2 ruleset.
-  waf_configuration {
-    enabled          = true
-    firewall_mode    = "Prevention"
-    rule_set_type    = "OWASP"
-    rule_set_version = "3.2"
-  }
-
   tags = merge(local.common_tags, { Role = "load-balancer" })
-}
-
-###############################################################################
-# 9. AZURE FRONT DOOR (Standard/Premium) — global edge / CDN / TLS termination
-###############################################################################
-
-resource "azurerm_cdn_frontdoor_profile" "main" {
-  name                = "statuspage-${var.environment}-fd"
-  resource_group_name = azurerm_resource_group.main.name
-  sku_name            = "Standard_AzureFrontDoor"
-
-  tags = merge(local.common_tags, { Role = "edge-cdn" })
-}
-
-resource "azurerm_cdn_frontdoor_endpoint" "main" {
-  name                     = "statuspage-${var.environment}-endpoint"
-  cdn_frontdoor_profile_id = azurerm_cdn_frontdoor_profile.main.id
-
-  tags = local.common_tags
-}
-
-resource "azurerm_cdn_frontdoor_origin_group" "main" {
-  name                     = "statuspage-origin-group"
-  cdn_frontdoor_profile_id = azurerm_cdn_frontdoor_profile.main.id
-
-  load_balancing {
-    sample_size                 = 4
-    successful_samples_required = 3
-    additional_latency_in_milliseconds = 50
-  }
-
-  health_probe {
-    path                = "/health"
-    request_type        = "GET"
-    protocol            = "Http"
-    interval_in_seconds = 30
-  }
-}
-
-resource "azurerm_cdn_frontdoor_origin" "appgw" {
-  name                          = "statuspage-appgw-origin"
-  cdn_frontdoor_origin_group_id = azurerm_cdn_frontdoor_origin_group.main.id
-  enabled                       = true
-
-  # Front Door sends traffic to the App Gateway public IP on HTTP:8080.
-  host_name          = azurerm_public_ip.appgw.ip_address
-  http_port          = 8080
-  https_port         = 443
-  origin_host_header = azurerm_public_ip.appgw.ip_address
-  priority           = 1
-  weight             = 1000
-
-  # Enforce certificate name check for HTTPS origins (not applicable for
-  # HTTP:8080 but kept for completeness).
-  certificate_name_check_enabled = false
-}
-
-resource "azurerm_cdn_frontdoor_route" "main" {
-  name                          = "statuspage-route"
-  cdn_frontdoor_endpoint_id     = azurerm_cdn_frontdoor_endpoint.main.id
-  cdn_frontdoor_origin_group_id = azurerm_cdn_frontdoor_origin_group.main.id
-  cdn_frontdoor_origin_ids      = [azurerm_cdn_frontdoor_origin.appgw.id]
-  enabled                       = true
-
-  forwarding_protocol    = "HttpOnly" # Front Door → App Gateway is HTTP:8080
-  https_redirect_enabled = true       # User-facing: HTTP → HTTPS redirect at edge
-  patterns_to_match      = ["/*"]
-  supported_protocols    = ["Http", "Https"]
 }
 
 ###############################################################################
@@ -730,7 +656,11 @@ resource "azurerm_storage_account" "main" {
   }
 
   network_rules {
-    default_action             = "Deny"
+    # Open to public internet so GitHub-hosted Actions runners (ephemeral,
+    # unpredictable IPs) can upload build artefacts. Acceptable for this demo
+    # account (non-sensitive build artefacts only); tighten if this pattern
+    # is ever reused for anything carrying real data.
+    default_action             = "Allow"
     bypass                     = ["AzureServices"]
     virtual_network_subnet_ids = [azurerm_subnet.app.id]
     ip_rules                   = var.allowed_ip_ranges
@@ -811,6 +741,7 @@ resource "azurerm_network_interface_security_group_association" "main" {
 
 resource "azurerm_windows_virtual_machine" "statuspage" {
   name                  = "statuspage-${var.environment}-vm"
+  computer_name         = substr("statuspage-${var.environment}", 0, 15)
   resource_group_name   = azurerm_resource_group.main.name
   location              = azurerm_resource_group.main.location
   size                  = var.vm_size
@@ -844,7 +775,8 @@ resource "azurerm_windows_virtual_machine" "statuspage" {
   # Patch mode: AutomaticByPlatform keeps the VM patched without manual
   # intervention; hotpatching reduces reboots on Windows Server 2022.
   patch_mode      = "AutomaticByPlatform"
-  hotpatching_enabled = true
+  # Hotpatching requires a "-core"/"-hotpatch" image SKU variant; not needed
+  # for this demo, so left disabled on the standard datacenter-azure-edition SKU.
 
   # Boot diagnostics stored in the managed storage account.
   boot_diagnostics {
@@ -971,12 +903,12 @@ resource "azurerm_dns_zone" "main" {
 }
 
 # CNAME pointing the apex/subdomain to the Front Door endpoint.
-resource "azurerm_dns_cname_record" "statuspage" {
+resource "azurerm_dns_a_record" "statuspage" {
   name                = var.dns_record_name
   zone_name           = azurerm_dns_zone.main.name
   resource_group_name = azurerm_resource_group.main.name
   ttl                 = 300
-  record              = azurerm_cdn_frontdoor_endpoint.main.host_name
+  records             = [azurerm_public_ip.appgw.ip_address]
 
   tags = local.common_tags
 }

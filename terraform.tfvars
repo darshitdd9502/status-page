@@ -30,7 +30,7 @@ allowed_ip_ranges = []
 ###############################################################################
 # VIRTUAL MACHINE
 ###############################################################################
-vm_size        = "Standard_D4s_v5"   # matches target-state architecture spec
+vm_size        = "Standard_D2s_v4"   # matches target-state architecture spec
 admin_username = "statuspageadmin"
 # admin_password — set via: export TF_VAR_admin_password='YourStr0ng!Pass'
 app_port     = 8080

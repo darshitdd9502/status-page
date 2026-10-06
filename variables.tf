@@ -129,9 +129,9 @@ variable "allowed_ip_ranges" {
 ###############################################################################
 
 variable "vm_size" {
-  description = "Azure VM SKU for the StatusPage Windows host. Target state specifies Standard_D4s_v5."
+  description = "Azure VM SKU for the StatusPage Windows host. Standard_D4s_v5 hit capacity restrictions in eastus; Standard_D2s_v4 is the confirmed-working size for this subscription/region."
   type        = string
-  default     = "Standard_D4s_v5"
+  default     = "Standard_D2s_v4"
 
   validation {
     condition     = can(regex("^Standard_", var.vm_size))

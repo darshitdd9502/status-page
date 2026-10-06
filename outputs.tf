@@ -20,15 +20,7 @@ output "application_gateway_public_ip" {
   value       = azurerm_public_ip.appgw.ip_address
 }
 
-output "front_door_endpoint_hostname" {
-  description = "Azure Front Door endpoint hostname — the public-facing URL for StatusPage."
-  value       = azurerm_cdn_frontdoor_endpoint.main.host_name
-}
 
-output "front_door_profile_id" {
-  description = "Resource ID of the Azure Front Door profile."
-  value       = azurerm_cdn_frontdoor_profile.main.id
-}
 
 output "key_vault_uri" {
   description = "URI of the Key Vault holding the VM admin password and disk encryption key."
@@ -82,10 +74,10 @@ output "bastion_host_name" {
 
 output "statuspage_url" {
   description = "Public URL for the StatusPage application (via Front Door)."
-  value       = "https://${azurerm_cdn_frontdoor_endpoint.main.host_name}"
+  value       = "http://${azurerm_public_ip.appgw.ip_address}:8080"
 }
 
 output "statuspage_health_url" {
   description = "Health check URL for the StatusPage application."
-  value       = "https://${azurerm_cdn_frontdoor_endpoint.main.host_name}/health"
+  value       = "http://${azurerm_public_ip.appgw.ip_address}:8080/health"
 }
