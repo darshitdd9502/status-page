@@ -9,20 +9,16 @@ on:
     branches: [main]
   workflow_dispatch: {}
 
-env:
-  IMAGE_NAME: ${{ vars.REGISTRY }}/myapp
-  IMAGE_TAG: ${{ github.sha }}
-
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: Set up JDK 26
         uses: actions/setup-java@v4
         with:
-          java-version: '17'
+          java-version: '26'
           distribution: 'temurin'
 
       - name: Cache dependencies
@@ -44,10 +40,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: Set up JDK 26
         uses: actions/setup-java@v4
         with:
-          java-version: '17'
+          java-version: '26'
           distribution: 'temurin'
 
       - name: Upload artifact
@@ -61,12 +57,60 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: dev
+    permissions:
+      id-token: write
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+          path: dist
 
-      - name: Deploy to on-prem server via SSH/SCP (dev)
-        env:
-          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+      - name: Azure login (OIDC — no stored keys)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Upload jar to Blob Storage
         run: |
-          scp -o StrictHostKeyChecking=no $ARTIFACT_PATH deploy@dev.onprem.internal:/opt/myapp/
-          ssh -o StrictHostKeyChecking=no deploy@dev.onprem.internal "sudo systemctl restart myapp"
+          JAR_PATH=$(find dist -name '*.jar' | head -n1)
+          az storage blob upload \
+            --account-name spdiagdev3w19xb \
+            --container-name artefacts \
+            --name statuspage.jar \
+            --file "$JAR_PATH" \
+            --auth-mode login \
+            --overwrite
+
+      - name: Generate short-lived SAS URL for the jar
+        id: sas
+        run: |
+          EXPIRY=$(date -u -d "+20 minutes" '+%Y-%m-%dT%H:%MZ')
+          URL=$(az storage blob generate-sas \
+            --account-name spdiagdev3w19xb \
+            --container-name artefacts \
+            --name statuspage.jar \
+            --permissions r \
+            --expiry "$EXPIRY" \
+            --https-only \
+            --auth-mode login \
+            --as-user \
+            --full-uri -o tsv)
+          echo "jar_url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy to StatusPage VM
+        run: |
+          az vm run-command invoke \
+            --resource-group statuspage-dev-rg \
+            --name statuspage-dev-vm \
+            --command-id RunPowerShellScript \
+            --scripts \
+              "if (-not (Test-Path 'C:\Program Files\Eclipse Adoptium')) { Invoke-WebRequest -Uri 'https://api.adoptium.net/v3/binary/latest/26/ga/windows/x64/jre/hotspot/normal/eclipse' -OutFile C:\temurin26.msi; Start-Process msiexec.exe -ArgumentList '/i C:\temurin26.msi /quiet' -Wait }" \
+              "New-Item -ItemType Directory -Force -Path C:\apps\statuspage" \
+              "Invoke-WebRequest -Uri '${{ steps.sas.outputs.jar_url }}' -OutFile C:\apps\statuspage\statuspage.jar" \
+              "if (-not (Test-Path 'C:\apps\statuspage\WinSW.exe')) { Invoke-WebRequest -Uri 'https://github.com/winsw/winsw/releases/latest/download/WinSW-x64.exe' -OutFile C:\apps\statuspage\WinSW.exe; \$xml = '<service><id>StatusPage</id><name>StatusPage</name><executable>java</executable><arguments>-jar C:\apps\statuspage\statuspage.jar</arguments><env name=\"PORT\" value=\"8080\"/><onfailure action=\"restart\"/></service>'; Set-Content -Path C:\apps\statuspage\WinSW.xml -Value \$xml; Set-Location C:\apps\statuspage; .\WinSW.exe install }" \
+              "Stop-Service StatusPage -ErrorAction SilentlyContinue" \
+              "Start-Service StatusPage"
